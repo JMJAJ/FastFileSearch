@@ -6,12 +6,17 @@
 #include <string>
 #include <vector>
 #include <queue>
-#include <mutex>
 #include <thread>
+#include <mutex>
 #include <atomic>
-#include <chrono>
-#include <filesystem>
 #include <regex>
+#include <algorithm>
+#include <filesystem>
+#include <chrono>
+#include <psapi.h>
+#pragma comment(lib, "psapi.lib")
+
+// DirectX and ImGui includes
 #include <d3d11.h>
 #include <shobjidl.h>
 #include <dwmapi.h>
@@ -241,6 +246,140 @@ public:
     std::chrono::steady_clock::time_point getStartTime() const { return startTime; }
 };
 
+// Performance monitoring class
+class PerformanceMonitor {
+private:
+    static const size_t MAX_SAMPLES = 100;
+    static const size_t SMOOTHING_WINDOW = 3;  // Number of samples to average
+    std::vector<float> cpuHistory;
+    std::vector<float> ramHistory;
+    HANDLE processHandle;
+    ULARGE_INTEGER lastCPU, lastSysCPU, lastUserCPU;
+    int numProcessors;
+    std::chrono::steady_clock::time_point lastUpdate;
+
+    void InitCPUMonitor() {
+        SYSTEM_INFO sysInfo;
+        FILETIME ftime, fsys, fuser;
+
+        GetSystemInfo(&sysInfo);
+        numProcessors = sysInfo.dwNumberOfProcessors;
+
+        GetSystemTimeAsFileTime(&ftime);
+        memcpy(&lastCPU, &ftime, sizeof(FILETIME));
+
+        processHandle = GetCurrentProcess();
+        GetProcessTimes(processHandle, &ftime, &ftime, &fsys, &fuser);
+        memcpy(&lastSysCPU, &fsys, sizeof(FILETIME));
+        memcpy(&lastUserCPU, &fuser, sizeof(FILETIME));
+    }
+
+    double GetCPUUsage() {
+        FILETIME ftime, fsys, fuser;
+        ULARGE_INTEGER now, sys, user;
+        double percent;
+
+        GetSystemTimeAsFileTime(&ftime);
+        memcpy(&now, &ftime, sizeof(FILETIME));
+
+        GetProcessTimes(processHandle, &ftime, &ftime, &fsys, &fuser);
+        memcpy(&sys, &fsys, sizeof(FILETIME));
+        memcpy(&user, &fuser, sizeof(FILETIME));
+        percent = (sys.QuadPart - lastSysCPU.QuadPart) +
+            (user.QuadPart - lastUserCPU.QuadPart);
+        percent /= (now.QuadPart - lastCPU.QuadPart);
+        percent /= numProcessors;
+        lastCPU = now;
+        lastUserCPU = user;
+        lastSysCPU = sys;
+
+        return percent;
+    }
+
+    float SmoothValue(const std::vector<float>& history, size_t currentIndex) {
+        float sum = 0.0f;
+        int count = 0;
+        for (size_t i = 0; i < SMOOTHING_WINDOW && i <= currentIndex; i++) {
+            sum += history[currentIndex - i];
+            count++;
+        }
+        return sum / count;
+    }
+
+public:
+    PerformanceMonitor() : cpuHistory(MAX_SAMPLES, 0.0f), ramHistory(MAX_SAMPLES, 0.0f) {
+        processHandle = GetCurrentProcess();
+        InitCPUMonitor();
+    }
+
+    ~PerformanceMonitor() {
+        CloseHandle(processHandle);
+    }
+
+    void Update() {
+        // Update CPU usage with smoothing
+        float rawCpuUsage = GetCPUUsage();
+        cpuHistory.erase(cpuHistory.begin());
+        cpuHistory.push_back(rawCpuUsage);
+        
+        // Update RAM usage
+        PROCESS_MEMORY_COUNTERS_EX pmc;
+        GetProcessMemoryInfo(processHandle, (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc));
+        float ramUsage = static_cast<float>(pmc.WorkingSetSize) / (1024.0f * 1024.0f); // Convert to MB
+
+        ramHistory.erase(ramHistory.begin());
+        ramHistory.push_back(ramUsage);
+    }
+
+    void RenderGraphs() {
+        const float PERF_WINDOW_WIDTH = 250.0f;
+        ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x - PERF_WINDOW_WIDTH, 0), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(PERF_WINDOW_WIDTH, ImGui::GetIO().DisplaySize.y), ImGuiCond_Always);
+        ImGui::Begin("Performance", nullptr, 
+            ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | 
+            ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+            ImGuiWindowFlags_NoTitleBar);
+
+        const float GRAPH_HEIGHT = ImGui::GetIO().DisplaySize.y * 0.4f;
+        const float GRAPH_WIDTH = PERF_WINDOW_WIDTH - 20.0f;
+
+        // Prepare smoothed CPU data for display
+        std::vector<float> smoothedCPU(cpuHistory.size());
+        for (size_t i = 0; i < cpuHistory.size(); i++) {
+            smoothedCPU[i] = SmoothValue(cpuHistory, i);
+        }
+
+        // CPU Graph with custom styling
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.7f, 0.3f, 1.0f));
+        ImGui::Text("CPU Usage");
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.1f, 0.1f, 0.1f, 0.8f));
+        ImGui::PushStyleColor(ImGuiCol_PlotLines, ImVec4(1.0f, 0.5f, 0.0f, 1.0f));
+        ImGui::PlotLines("##cpu", smoothedCPU.data(), smoothedCPU.size(), 0,
+            nullptr, 0.0f, 1.0f, ImVec2(GRAPH_WIDTH, GRAPH_HEIGHT));
+        ImGui::PopStyleColor(2);
+        ImGui::Text("Current: %.1f%%", smoothedCPU.back() * 100.0f);
+        ImGui::PopStyleColor();
+        
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        // RAM Graph with custom styling
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.5f, 1.0f));
+        ImGui::Text("RAM Usage (MB)");
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.1f, 0.1f, 0.1f, 0.8f));
+        ImGui::PushStyleColor(ImGuiCol_PlotLines, ImVec4(0.0f, 1.0f, 0.5f, 1.0f));
+        float maxRam = *std::max_element(ramHistory.begin(), ramHistory.end());
+        ImGui::PlotLines("##ram", ramHistory.data(), ramHistory.size(), 0,
+            nullptr, 0.0f, maxRam * 1.2f, ImVec2(GRAPH_WIDTH, GRAPH_HEIGHT));
+        ImGui::PopStyleColor(2);
+        ImGui::Text("Current: %.1f MB", ramHistory.back());
+        ImGui::PopStyleColor();
+
+        ImGui::End();
+    }
+};
+
 // Function to show folder browser dialog
 bool BrowseFolder(std::string& selected_path) {
     IFileOpenDialog* pFileDialog;
@@ -284,6 +423,7 @@ static ID3D11DeviceContext* g_pd3dDeviceContext = nullptr;
 static IDXGISwapChain* g_pSwapChain = nullptr;
 static UINT g_ResizeWidth = 0, g_ResizeHeight = 0;
 static ID3D11RenderTargetView* g_mainRenderTargetView = nullptr;
+static std::unique_ptr<PerformanceMonitor> g_perfMonitor;
 
 // Forward declarations
 bool CreateDeviceD3D(HWND hWnd);
@@ -331,6 +471,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     ImGui_ImplWin32_Init(hwnd);
     ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
 
+    // Initialize performance monitor
+    g_perfMonitor = std::make_unique<PerformanceMonitor>();
+
     // State
     std::atomic<bool> searchInProgress{ false };
     std::unique_ptr<FastSearch> searcher;
@@ -368,9 +511,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
+        // Update performance graphs
+        g_perfMonitor->Update();
+
         // Create the main window
         ImGui::SetNextWindowPos(ImVec2(0, 0));
-        ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
+        ImGui::SetNextWindowSize(ImVec2(ImGui::GetIO().DisplaySize.x - 250, ImGui::GetIO().DisplaySize.y));
         ImGui::Begin("FastSearch", nullptr, 
             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
 
@@ -463,6 +609,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             ImGui::EndChild();
         }
         ImGui::End();
+
+        // Render performance graphs
+        g_perfMonitor->RenderGraphs();
 
         // Rendering
         ImGui::Render();
