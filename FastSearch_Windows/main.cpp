@@ -161,11 +161,23 @@ private:
                     if (entry.is_directory()) {
                         std::lock_guard<std::mutex> lock(mtx);
                         workQueue.push(entry.path());
-                    }
-                    else {
+                    } else {
                         std::string filename = wstring_to_string(entry.path().filename().wstring());
+                        bool matches = false;
 
+                        // First try to match the filename
                         if (matchesPattern(filename)) {
+                            matches = true;
+                        }
+                        // If no match and not using regex, try to match against the full path
+                        else if (!useRegex) {
+                            std::string fullPath = wstring_to_string(entry.path().wstring());
+                            if (matchesPattern(fullPath)) {
+                                matches = true;
+                            }
+                        }
+
+                        if (matches) {
                             ++matchesFound;
                             std::lock_guard<std::mutex> lock(mtx);
                             results.push_back(entry.path().wstring());
@@ -402,6 +414,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                 // Show progress bar
                 ImGui::ProgressBar(progress, ImVec2(-1, 0));
                 
+                // Update results periodically
+                if (needsUpdate || !searcher->isSearching()) {
+                    currentResults = searcher->getResults();
+                    needsUpdate = false;
+                }
+                
                 if (!searcher->isSearching()) {
                     progress = 1.0f;
                     searchInProgress = false;
@@ -425,20 +443,25 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
         // Results list with proper styling
         if (ImGui::BeginChild("Results", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar)) {
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4, 2));  // Tighter spacing
             for (const auto& result : currentResults) {
+                std::string displayPath = wstring_to_string(result);
                 ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(200, 200, 200, 255));
-                if (ImGui::Selectable(wstring_to_string(result).c_str(), false)) {
+                if (ImGui::Selectable(displayPath.c_str(), false)) {
                     // Open file in explorer when clicked
                     std::wstring command = L"explorer.exe /select,\"" + result + L"\"";
                     ShellExecuteW(NULL, L"open", L"explorer.exe",
                         (L"/select,\"" + result + L"\"").c_str(),
                         NULL, SW_SHOWNORMAL);
                 }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("%s", displayPath.c_str());  // Show full path on hover
+                }
                 ImGui::PopStyleColor();
             }
+            ImGui::PopStyleVar();
+            ImGui::EndChild();
         }
-        ImGui::EndChild();
-
         ImGui::End();
 
         // Rendering
