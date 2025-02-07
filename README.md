@@ -10,7 +10,20 @@ A high-performance file search utility for Windows with a modern UI, built using
 - Support for regular expressions
 - Case-sensitive/insensitive search options
 - Modern, clean UI with DirectX 11 rendering
-- Click-to-open file location in Explorer
+- Tree view display of search results
+  - Hierarchical directory structure
+  - Expandable/collapsible folders
+  - Right-click context menus
+  - File size and last modified date
+- Interactive file operations:
+  - Single click: Select file in Explorer
+  - Double click: Open file directly
+  - Right-click menu options:
+    - Open file
+    - Open containing folder
+    - Copy file path
+    - Expand/Collapse all (for directories)
+- Persistent tree state between searches
 
 ## Building
 
@@ -31,7 +44,11 @@ cmake --build . --config Release
 3. Select the folder to search in using the "Browse" button
 4. Choose search options (case sensitivity, regex)
 5. Click "Search" to begin
-6. Click on any result to open its location in File Explorer
+6. Navigate results using the tree view:
+   - Click arrows or double-click to expand/collapse folders
+   - Right-click for additional options
+   - Use "Expand All" or "Collapse All" to quickly navigate large result sets
+   - View file sizes and last modified dates in the table view
 
 ## Performance
 
@@ -40,8 +57,19 @@ The application uses the KMP algorithm for string matching, providing:
 - Worst case time complexity: O(M + N)
 Where M is the length of the text and N is the length of the pattern.
 
+Multi-threaded search implementation ensures optimal performance on modern multi-core processors.
+
 ## Requirements
 
 - Windows
 - DirectX 11 capable graphics card
 - Visual Studio 2019 or later (for building)
+- CMake 3.15 or later
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit pull requests with new features or bug fixes.
+
+## License
+
+This project is open source and available under the MIT License.

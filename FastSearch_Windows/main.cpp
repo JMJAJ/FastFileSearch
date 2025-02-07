@@ -13,6 +13,8 @@
 #include <algorithm>
 #include <filesystem>
 #include <chrono>
+#include <map>
+#include <functional>
 #include <psapi.h>
 #pragma comment(lib, "psapi.lib")
 
@@ -244,6 +246,10 @@ public:
     bool isSearching() const { return searchInProgress; }
     const std::vector<std::wstring>& getResults() const { return results; }
     std::chrono::steady_clock::time_point getStartTime() const { return startTime; }
+    size_t getQueueSize() const {
+        std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(mtx));
+        return workQueue.size();
+    }
 };
 
 // Performance monitoring class
@@ -432,6 +438,59 @@ void CreateRenderTarget();
 void CleanupRenderTarget();
 LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
+// Helper function to split path into components
+std::vector<std::wstring> splitPath(const std::wstring& path) {
+    std::vector<std::wstring> components;
+    std::wstring current;
+    
+    for (wchar_t c : path) {
+        if (c == L'\\' || c == L'/') {
+            if (!current.empty()) {
+                components.push_back(current);
+                current.clear();
+            }
+        } else {
+            current += c;
+        }
+    }
+    if (!current.empty()) {
+        components.push_back(current);
+    }
+    return components;
+}
+
+// Helper function to format file size
+std::wstring formatFileSize(uintmax_t bytes) {
+    const wchar_t* units[] = { L"B", L"KB", L"MB", L"GB", L"TB" };
+    int unitIndex = 0;
+    double size = static_cast<double>(bytes);
+    
+    while (size >= 1024 && unitIndex < 4) {
+        size /= 1024;
+        unitIndex++;
+    }
+    
+    wchar_t buffer[32];
+    if (unitIndex == 0) {
+        swprintf(buffer, 32, L"%d %ls", static_cast<int>(size), units[unitIndex]);
+    } else {
+        swprintf(buffer, 32, L"%.2f %ls", size, units[unitIndex]);
+    }
+    return buffer;
+}
+
+// Helper function to format last modified time
+std::wstring formatLastModified(const std::filesystem::file_time_type& time) {
+    auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+        time - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now());
+    std::time_t tt = std::chrono::system_clock::to_time_t(sctp);
+    std::tm tm;
+    localtime_s(&tm, &tt);
+    wchar_t buffer[32];
+    wcsftime(buffer, 32, L"%Y-%m-%d %H:%M", &tm);
+    return buffer;
+}
+
 // Main code
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow) {
     // Initialize COM for the folder browser
@@ -478,7 +537,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     std::atomic<bool> searchInProgress{ false };
     std::unique_ptr<FastSearch> searcher;
     static char searchPattern[256] = "";
-    static char folderPath[1024] = "";
+    static char folderPath[1024] = "C:\\";
     static bool caseSensitive = false;
     static bool useRegex = false;
     std::vector<std::wstring> currentResults;
@@ -556,6 +615,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             if (searcher) {
                 size_t filesProcessed = searcher->getFilesProcessed();
                 size_t matchesFound = searcher->getMatchesFound();
+                size_t queueSize = searcher->getQueueSize();
+                
+                // Calculate more accurate progress based on files processed and remaining queue
+                if (filesProcessed > 0) {
+                    float estimatedProgress = static_cast<float>(filesProcessed) / (filesProcessed + queueSize);
+                    progress = estimatedProgress;
+                }
                 
                 // Show progress bar
                 ImGui::ProgressBar(progress, ImVec2(-1, 0));
@@ -574,12 +640,27 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                     auto elapsedSeconds = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - searcher->getStartTime()).count() / 1000.0f;
                     ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(50, 255, 50, 255));  // Green color
                     ImGui::SetWindowFontScale(1.2f);  // Make text 20% larger
-                    ImGui::Text("Search completed in %.2f seconds", elapsedSeconds);
+                    ImGui::Text("Search completed in %.2f seconds (%.1f files/sec)", 
+                        elapsedSeconds, filesProcessed / elapsedSeconds);
                     ImGui::SetWindowFontScale(1.0f);  // Reset font scale
                     ImGui::PopStyleColor();
                 } else {
-                    progress = std::min(0.99f, progress + 0.001f);
                     needsUpdate = (ImGui::GetFrameCount() % 30) == 0; // Update every 30 frames
+                    
+                    // Calculate current speed and ETA
+                    auto currentTime = std::chrono::steady_clock::now();
+                    auto elapsedSeconds = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - searcher->getStartTime()).count() / 1000.0f;
+                    float filesPerSecond = filesProcessed / elapsedSeconds;
+                    
+                    // Show current speed
+                    ImGui::Text("Speed: %.1f files/sec", filesPerSecond);
+                    
+                    // Show total files discovered so far
+                    ImGui::Text("Total files discovered: %zu", filesProcessed + queueSize);
+                    
+                    // Estimate remaining time based on actual queue size
+                    float estimatedRemainingSeconds = queueSize / filesPerSecond;
+                    ImGui::Text("ETA: %.1f seconds", estimatedRemainingSeconds);
                 }
                 
                 ImGui::Text("Processed: %zu files | Found: %zu matches", filesProcessed, matchesFound);
@@ -589,25 +670,226 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
         // Results list with proper styling
         if (ImGui::BeginChild("Results", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar)) {
-            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4, 2));  // Tighter spacing
+            static ImGuiTableFlags flags = ImGuiTableFlags_BordersV | ImGuiTableFlags_BordersOuterH | ImGuiTableFlags_Resizable | ImGuiTableFlags_RowBg;
+            
+            // Global expansion state map
+            static std::map<std::wstring, bool> treeExpansionState;
+
+            // Create a tree structure from paths
+            struct TreeNode {
+                std::wstring name;
+                std::wstring fullPath;
+                bool isFile;
+                uintmax_t fileSize;
+                std::filesystem::file_time_type lastModified;
+                std::map<std::wstring, std::unique_ptr<TreeNode>> children;
+
+                // Recursively collapse/expand all children
+                void setExpandState(bool expand) {
+                    if (!isFile) {
+                        treeExpansionState[fullPath] = expand;
+                        for (auto& [name, child] : children) {
+                            if (!child->isFile) {
+                                child->setExpandState(expand);
+                            }
+                        }
+                    }
+                }
+
+                // Check if this node has any subdirectories
+                bool hasSubdirectories() const {
+                    for (const auto& [name, child] : children) {
+                        if (!child->isFile) return true;
+                    }
+                    return false;
+                }
+
+                // Get expansion state
+                bool getExpandState() const {
+                    if (isFile) return false;
+                    auto it = treeExpansionState.find(fullPath);
+                    return it != treeExpansionState.end() ? it->second : false;
+                }
+            };
+
+            // Build tree from results
+            TreeNode root;
+            root.name = L"";
+            root.isFile = false;
+
             for (const auto& result : currentResults) {
-                std::string displayPath = wstring_to_string(result);
-                ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(200, 200, 200, 255));
-                if (ImGui::Selectable(displayPath.c_str(), false)) {
-                    // Open file in explorer when clicked
-                    std::wstring command = L"explorer.exe /select,\"" + result + L"\"";
-                    ShellExecuteW(NULL, L"open", L"explorer.exe",
-                        (L"/select,\"" + result + L"\"").c_str(),
-                        NULL, SW_SHOWNORMAL);
+                auto components = splitPath(result);
+                TreeNode* current = &root;
+                std::wstring currentPath;
+
+                for (size_t i = 0; i < components.size(); ++i) {
+                    const auto& comp = components[i];
+                    if (!currentPath.empty()) {
+                        currentPath += L"\\";
+                    }
+                    currentPath += comp;
+
+                    if (current->children.find(comp) == current->children.end()) {
+                        auto newNode = std::make_unique<TreeNode>();
+                        newNode->name = comp;
+                        newNode->fullPath = currentPath;
+                        newNode->isFile = (i == components.size() - 1);
+                        
+                        // Get file info if it's a file
+                        if (newNode->isFile) {
+                            std::error_code ec;
+                            auto fileStatus = std::filesystem::status(currentPath, ec);
+                            if (!ec) {
+                                newNode->fileSize = std::filesystem::file_size(currentPath, ec);
+                                newNode->lastModified = std::filesystem::last_write_time(currentPath, ec);
+                            }
+                        }
+                        
+                        current->children[comp] = std::move(newNode);
+                    }
+                    current = current->children[comp].get();
                 }
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("%s", displayPath.c_str());  // Show full path on hover
-                }
-                ImGui::PopStyleColor();
             }
-            ImGui::PopStyleVar();
+
+            if (ImGui::BeginTable("tree_table", 3, flags)) {
+                ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_NoHide);
+                ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+                ImGui::TableSetupColumn("Modified", ImGuiTableColumnFlags_WidthFixed, 150.0f);
+                ImGui::TableHeadersRow();
+
+                // Function to recursively render tree
+                std::function<void(TreeNode&, int)> renderTree;
+                renderTree = [&](TreeNode& node, int depth) {
+                    for (auto& [name, child] : node.children) {
+                        ImGui::TableNextRow();
+                        ImGui::TableNextColumn();
+                        
+                        ImGui::PushID(wstring_to_string(child->fullPath).c_str());
+                        
+                        // Indent based on depth
+                        if (depth > 0) {
+                            ImGui::Indent(20.0f);
+                        }
+
+                        // Set color based on whether it's a file or directory
+                        ImGui::PushStyleColor(ImGuiCol_Text, 
+                            child->isFile ? ImVec4(0.8f, 0.8f, 0.8f, 1.0f) : ImVec4(0.4f, 0.8f, 1.0f, 1.0f));
+
+                        bool isOpen = false;
+                        if (child->isFile) {
+                            // Files are selectable but not expandable
+                            ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
+                            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.4f, 0.4f, 0.4f, 0.5f));
+                            
+                            if (ImGui::Selectable(wstring_to_string(child->name).c_str(), false, ImGuiSelectableFlags_AllowDoubleClick)) {
+                                if (ImGui::IsMouseDoubleClicked(0)) {
+                                    // Open file on double click
+                                    ShellExecuteW(NULL, L"open", child->fullPath.c_str(), NULL, NULL, SW_SHOWNORMAL);
+                                } else {
+                                    // Select file in explorer on single click
+                                    ShellExecuteW(NULL, L"open", L"explorer.exe",
+                                        (L"/select,\"" + child->fullPath + L"\"").c_str(),
+                                        NULL, SW_SHOWNORMAL);
+                                }
+                            }
+                            
+                            ImGui::PopStyleColor(2);
+                            
+                            // Context menu for files
+                            if (ImGui::BeginPopupContextItem()) {
+                                if (ImGui::MenuItem("Open")) {
+                                    ShellExecuteW(NULL, L"open", child->fullPath.c_str(), NULL, NULL, SW_SHOWNORMAL);
+                                }
+                                if (ImGui::MenuItem("Open Containing Folder")) {
+                                    ShellExecuteW(NULL, L"open", L"explorer.exe",
+                                        (L"/select,\"" + child->fullPath + L"\"").c_str(),
+                                        NULL, SW_SHOWNORMAL);
+                                }
+                                if (ImGui::MenuItem("Copy Path")) {
+                                    ImGui::SetClipboardText(wstring_to_string(child->fullPath).c_str());
+                                }
+                                ImGui::EndPopup();
+                            }
+                        } else {
+                            // Directories are tree nodes
+                            ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | 
+                                                     ImGuiTreeNodeFlags_OpenOnDoubleClick | 
+                                                     ImGuiTreeNodeFlags_SpanFullWidth;
+                            
+                            bool wasExpanded = child->getExpandState();
+                            if (wasExpanded) {
+                                flags |= ImGuiTreeNodeFlags_DefaultOpen;
+                            }
+                            
+                            isOpen = ImGui::TreeNodeEx(wstring_to_string(child->name).c_str(), flags);
+                            
+                            // Update expansion state only if it changed
+                            if (isOpen != wasExpanded) {
+                                child->setExpandState(isOpen);
+                            }
+                            
+                            // Context menu for directories
+                            if (ImGui::BeginPopupContextItem()) {
+                                if (ImGui::MenuItem("Open in Explorer")) {
+                                    ShellExecuteW(NULL, L"open", child->fullPath.c_str(), NULL, NULL, SW_SHOWNORMAL);
+                                }
+                                if (ImGui::MenuItem("Copy Path")) {
+                                    ImGui::SetClipboardText(wstring_to_string(child->fullPath).c_str());
+                                }
+                                
+                                // Only show expand/collapse options if there are subdirectories
+                                if (child->hasSubdirectories()) {
+                                    ImGui::Separator();
+                                    if (ImGui::MenuItem("Expand All")) {
+                                        child->setExpandState(true);
+                                        // Force the current node to expand
+                                        ImGui::SetNextItemOpen(true);
+                                    }
+                                    if (ImGui::MenuItem("Collapse All")) {
+                                        child->setExpandState(false);
+                                        // Force the current node to collapse
+                                        ImGui::SetNextItemOpen(false);
+                                    }
+                                }
+                                ImGui::EndPopup();
+                            }
+
+                        }
+                        ImGui::PopStyleColor();
+
+                        // Show file size in second column
+                        ImGui::TableNextColumn();
+                        if (child->isFile) {
+                            ImGui::TextUnformatted(wstring_to_string(formatFileSize(child->fileSize)).c_str());
+                        }
+
+                        // Show last modified date in third column
+                        ImGui::TableNextColumn();
+                        if (child->isFile) {
+                            ImGui::TextUnformatted(wstring_to_string(formatLastModified(child->lastModified)).c_str());
+                        }
+
+                        if (isOpen) {
+                            renderTree(*child, depth + 1);
+                            ImGui::TreePop();
+                        }
+
+                        if (depth > 0) {
+                            ImGui::Unindent(20.0f);
+                        }
+                        
+                        ImGui::PopID();
+                    }
+                };
+
+                // Render the tree
+                renderTree(root, 0);
+                ImGui::EndTable();
+            }
+
             ImGui::EndChild();
         }
+
         ImGui::End();
 
         // Render performance graphs
