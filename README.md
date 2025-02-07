@@ -27,12 +27,48 @@ A high-performance file search utility for Windows with a modern UI, built using
 
 ## Building
 
-1. Make sure you have CMake and Visual Studio installed
-2. Clone the repository
-3. Run these commands:
+### Prerequisites
+
+- Windows
+- Visual Studio 2022 (any edition)
+- DirectX 11 capable graphics card
+
+### Option 1: Using Visual Studio 2022 (Recommended)
+
+1. Clone the repository with submodules:
+```bash
+git clone --recursive https://github.com/JMJAJ/FastFileSearch.git
+# Or if you already cloned without submodules:
+git submodule update --init --recursive
+```
+
+2. Open `FastSearch_Windows.sln` in Visual Studio 2022
+3. Select your desired configuration (Debug/Release) and platform (x64/x86)
+4. Build and run the project
+
+### Option 2: Using MSBuild Command Line
+
+1. Clone the repository with submodules as shown above
+2. Open "Developer Command Prompt for VS 2022"
+3. Navigate to the project directory:
+```cmd
+cd path\to\FastFileSearch
+```
+4. Build using MSBuild:
+```cmd
+msbuild FastSearch_Windows\FastSearch_Windows.vcxproj /p:Configuration=Release /p:Platform=x64
+```
+
+### Option 3: Using CMake
+
+1. Clone the repository with submodules as shown above
+2. Create and navigate to a build directory:
 ```bash
 mkdir build
 cd build
+```
+3. Configure and build:
+```bash
 cmake ..
 cmake --build . --config Release
 ```
@@ -59,12 +95,11 @@ Where M is the length of the text and N is the length of the pattern.
 
 Multi-threaded search implementation ensures optimal performance on modern multi-core processors.
 
-## Requirements
+## Dependencies
 
-- Windows
-- DirectX 11 capable graphics card
-- Visual Studio 2019 or later (for building)
-- CMake 3.15 or later
+All dependencies are included as Git submodules:
+- [Dear ImGui](https://github.com/ocornut/imgui) - Immediate mode GUI library
+- DirectX 11 (included with Windows SDK)
 
 ## Contributing
 

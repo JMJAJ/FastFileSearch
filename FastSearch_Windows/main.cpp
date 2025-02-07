@@ -22,9 +22,17 @@
 #include <d3d11.h>
 #include <shobjidl.h>
 #include <dwmapi.h>
-#include "imgui.h"
-#include "imgui_impl_win32.h"
-#include "imgui_impl_dx11.h"
+
+// ImGui includes - automatically selects the right path based on build system
+#ifdef CMAKE_BUILD
+    #include "imgui.h"
+    #include "imgui_impl_win32.h"
+    #include "imgui_impl_dx11.h"
+#else
+    #include "../external/imgui/imgui.h"
+    #include "../external/imgui/backends/imgui_impl_win32.h"
+    #include "../external/imgui/backends/imgui_impl_dx11.h"
+#endif
 
 #pragma comment(lib, "dwmapi.lib")
 
