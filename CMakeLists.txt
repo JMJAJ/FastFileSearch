@@ -28,6 +28,7 @@ set(IMGUI_SOURCES
 
 add_executable(FastSearch_Windows WIN32
     FastSearch_Windows/main.cpp
+    FastSearch_Windows/FastSearch.rc
     ${IMGUI_SOURCES}
 )
 
