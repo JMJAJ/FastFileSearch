@@ -1,7 +1,7 @@
 # FastFileSearch (Beta)
 
 A high-performance file search utility for Windows with a modern UI, built using Dear ImGui and DirectX 11.
-(Still learning about searching algos and other methods) <img src="https://media.tenor.com/0z7sLx2ohBkAAAAi/tower-of-fantasy-tof.gif" width="128"/>
+(Still learning about searching algos and other methods) <img src="https://media.tenor.com/0z7sLx2ohBkAAAAi/tower-of-fantasy-tof.gif" width="16"/>
 
 ## Features
 
